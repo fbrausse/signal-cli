@@ -59,6 +59,14 @@ public class SignalAccount {
         jsonProcessor.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         jsonProcessor.disable(JsonParser.Feature.AUTO_CLOSE_SOURCE);
         jsonProcessor.disable(JsonGenerator.Feature.AUTO_CLOSE_TARGET);
+
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+            @Override
+            public void run() {
+                if (lock != null)
+                    save();
+            }
+        });
     }
 
     public static SignalAccount load(String dataPath, String username) throws IOException {
@@ -129,7 +137,14 @@ public class SignalAccount {
     }
 
     private void load() throws IOException {
-        JsonNode rootNode = jsonProcessor.readTree(Channels.newInputStream(fileChannel));
+        JsonNode rootNode = null;
+        synchronized (fileChannel) {
+            fileChannel.position(0);
+            rootNode = jsonProcessor.readTree(
+                new java.io.BufferedInputStream(Channels.newInputStream(fileChannel)) {
+                    @Override public void close() {}
+                });
+        }
 
         JsonNode node = rootNode.get("deviceId");
         if (node != null) {
@@ -204,10 +219,17 @@ public class SignalAccount {
                 .putPOJO("threadStore", threadStore)
         ;
         try {
-            fileChannel.position(0);
-            jsonProcessor.writeValue(Channels.newOutputStream(fileChannel), rootNode);
-            fileChannel.truncate(fileChannel.position());
-            fileChannel.force(false);
+            try {
+                synchronized (fileChannel) {
+                    fileChannel.position(0);
+                    jsonProcessor.writeValue(new java.io.BufferedOutputStream(Channels.newOutputStream(fileChannel)) {
+                        @Override public void close() throws IOException { flush(); }
+                    }, rootNode);
+                    fileChannel.truncate(fileChannel.position());
+                }
+            } finally {
+                fileChannel.force(false);
+            }
         } catch (Exception e) {
             System.err.println(String.format("Error saving file: %s", e.getMessage()));
         }
